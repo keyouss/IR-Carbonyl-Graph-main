@@ -11,15 +11,15 @@ EPS = 1e-15
 
 class GNNExplainer(torch.nn.Module):
     coeffs = {
-        'node_feat_reduction': 'mean',
-        'node_feat_size': 1.0,
-        'node_feat_ent': 0.1,
-        'edge_reduction': 'sum',
-        'edge_size': 0.004,
-        'edge_ent': 1.0,
-        'edge_feat_reduction': 'mean',  # 新增边特征归约方式
-        'edge_feat_size': 1.0,  # 新增边特征大小正则化系数
-        'edge_feat_ent': 0.1,  # 新增边特征熵正则化系数
+        'node_feat_reduction': 'mean',  # Reduction method for node feature regularization (mean/sum)
+        'node_feat_size': 1.0,         # Weight for node feature mask size regularization
+        'node_feat_ent': 0.1,          # Weight for node feature mask entropy regularization
+        'edge_reduction': 'sum',       # Reduction method for edge mask regularization (mean/sum)
+        'edge_size': 0.004,            # Weight for edge mask size regularization
+        'edge_ent': 1.0,               # Weight for edge mask entropy regularization
+        'edge_feat_reduction': 'mean', # Reduction method for edge feature regularization (mean/sum)
+        'edge_feat_size': 1.0,         # Weight for edge feature mask size regularization
+        'edge_feat_ent': 0.1,          # Weight for edge feature mask entropy regularization
     }
 
     def __init__(self, model, epochs: int = 100, lr: float = 0.01,
@@ -43,7 +43,7 @@ class GNNExplainer(torch.nn.Module):
         (N, F), E = x.size(), edge_index.size(1)
 
         std = 0.1
-        # 节点特征掩码
+        # Node feature mask initialization
         if self.feat_mask_type == 'individual_feature':
             self.node_feat_mask = torch.nn.Parameter(torch.randn(N, F) * std)
         elif self.feat_mask_type == 'scalar':
@@ -51,7 +51,7 @@ class GNNExplainer(torch.nn.Module):
         else:
             self.node_feat_mask = torch.nn.Parameter(torch.randn(1, F) * std)
 
-        # 边掩码
+        # Edge mask initialization
         std_edge = torch.nn.init.calculate_gain('relu') * sqrt(2.0 / (2 * N))
         self.edge_mask = torch.nn.Parameter(torch.randn(E) * std_edge)
         if not self.allow_edge_mask:
@@ -59,7 +59,7 @@ class GNNExplainer(torch.nn.Module):
             self.edge_mask.fill_(float('inf'))
         self.loop_mask = edge_index[0] != edge_index[1]
 
-        # 边特征掩码
+        # Edge feature mask initialization
         self.edge_feat_mask = None
         if edge_attr is not None:
             F_edge = edge_attr.size(1)
@@ -127,21 +127,21 @@ class GNNExplainer(torch.nn.Module):
         else:
             loss = -log_logits[node_idx, pred_label[node_idx]] if node_idx != -1 else -log_logits[0, pred_label[0]]
 
-        # 节点特征掩码正则化
+        # Node feature mask regularization
         m_node = self.node_feat_mask.sigmoid()
         node_feat_reduce = getattr(torch, self.coeffs['node_feat_reduction'])
         loss = loss + self.coeffs['node_feat_size'] * node_feat_reduce(m_node)
         ent_node = -m_node * torch.log(m_node + EPS) - (1 - m_node) * torch.log(1 - m_node + EPS)
         loss = loss + self.coeffs['node_feat_ent'] * ent_node.mean()
 
-        # 边掩码正则化
+        # Edge mask regularization
         m_edge = self.edge_mask.sigmoid()
         edge_reduce = getattr(torch, self.coeffs['edge_reduction'])
         loss = loss + self.coeffs['edge_size'] * edge_reduce(m_edge)
         ent_edge = -m_edge * torch.log(m_edge + EPS) - (1 - m_edge) * torch.log(1 - m_edge + EPS)
         loss = loss + self.coeffs['edge_ent'] * ent_edge.mean()
 
-        # 边特征掩码正则化 (如果存在)
+        # Edge feature mask regularization (if exists)
         if self.edge_feat_mask is not None:
             m_edge_feat = self.edge_feat_mask.sigmoid()
             edge_feat_reduce = getattr(torch, self.coeffs['edge_feat_reduction'])
@@ -212,11 +212,11 @@ class GNNExplainer(torch.nn.Module):
         self.__clear_masks__()
 
         num_edges = edge_index.size(1)
-        # 提取子图 (包含边特征处理)
+        # Extract subgraph (including edge features)
         x, edge_index, mapping, hard_edge_mask, subset, kwargs = \
             self.__subgraph__(node_idx, x, edge_index, **kwargs)
         
-        # 处理边特征
+        # Process edge features
         if edge_attr is not None:
             edge_attr_sub = edge_attr[hard_edge_mask]
         else:
@@ -262,7 +262,7 @@ class GNNExplainer(torch.nn.Module):
         if self.log:
             pbar.close()
 
-        # 处理节点特征掩码
+        # Process node feature mask
         node_feat_mask = self.node_feat_mask.detach().sigmoid()
         if self.feat_mask_type != 'feature':
             new_mask = x.new_zeros(x.size(0), node_feat_mask.size(1))
@@ -270,11 +270,11 @@ class GNNExplainer(torch.nn.Module):
             node_feat_mask = new_mask
         node_feat_mask = node_feat_mask.squeeze()
 
-        # 处理边掩码
+        # Process edge mask
         full_edge_mask = self.edge_mask.new_zeros(num_edges)
         full_edge_mask[hard_edge_mask] = self.edge_mask.detach().sigmoid()
 
-        # 处理边特征掩码
+        # Process edge feature mask
         if self.edge_feat_mask is not None:
             edge_feat_mask = self.edge_feat_mask.new_zeros(num_edges, edge_attr.size(1))
             edge_feat_mask[hard_edge_mask] = self.edge_feat_mask.detach().sigmoid()
